@@ -84,7 +84,7 @@ mode = st.sidebar.radio("Choose mode", ["User-based CF", "Item-based CF", "SVD"]
 # -------------------------------
 # Main: Recommendations
 # -------------------------------
-if st.button("🎯 Recommend"):
+if st.button(" Recommend"):
     if len(favorite_movies) != 3:
         st.warning("Select exactly 3 favourite movies to get recommendations!")
     else:
@@ -96,7 +96,7 @@ if st.button("🎯 Recommend"):
             else:
                 recs = recommend_svd(favorite_movies, svd_model, movies_df, user_item_matrix, top_n=10)
 
-        st.subheader("🎯 Recommended Movies:")
+        st.subheader(" Recommended Movies:")
         # Display in two columns as cards
         cols = st.columns(2)
         for i, movie in enumerate(recs):
