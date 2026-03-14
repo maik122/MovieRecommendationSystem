@@ -277,10 +277,23 @@ def recommend_svd(favorite_movies, svd_model, movies_df, top_n=10):
     return list(zip(top["title"].tolist(), top["norm"].tolist()))
 
 
-METHOD_META = {
-    "Item-based CF": "Cosine similarity between movies",
-    "User-based CF": "Pseudo-user similarity matching",
-    "SVD":           "Matrix factorisation (tuned)",
+# Internal mode keys → (display label, short metric label, plain-English explanation)
+MODES = {
+    "Similar Movies":   (
+        "Similar movies",
+        '"If you liked those, you\'ll like these" — finds movies that are '
+        "rated similarly across all users. Great for staying in a genre or mood."
+    ),
+    "Similar Audience": (
+        "Similar audience",
+        '"People who loved your picks also loved…" — finds viewers with the '
+        "same taste and borrows their highest-rated films."
+    ),
+    "Smart Pick":       (
+        "Smart pick",
+        '"Our best guess for you" — a machine-learning model trained on '
+        "100,000 ratings predicts exactly how much you\'d enjoy each film."
+    ),
 }
 
 
@@ -313,23 +326,27 @@ if 0 < remaining < 3:
         unsafe_allow_html=True,
     )
 
-st.markdown('<div class="label" style="margin-top:1.2rem">Algorithm</div>', unsafe_allow_html=True)
+st.markdown('<div class="label" style="margin-top:1.2rem">How would you like us to choose?</div>', unsafe_allow_html=True)
 mode = st.radio(
     label="mode",
-    options=["Item-based CF", "User-based CF", "SVD"],
+    options=list(MODES.keys()),
     horizontal=True,
     label_visibility="collapsed",
 )
 
-top_n = st.slider("Recommendations", min_value=5, max_value=20, value=10, step=1)
+# Plain-English explanation of the chosen mode
+short_label, explanation = MODES[mode]
+st.markdown(f'<div class="info-strip">💡 {explanation}</div>', unsafe_allow_html=True)
+
+top_n = st.slider("How many recommendations?", min_value=5, max_value=20, value=10, step=1)
 st.markdown("")
 go = st.button("✦  Find My Movies", disabled=(len(selected) != 3))
 
 if go and len(selected) == 3:
     with st.spinner("Curating your watchlist …"):
-        if mode == "Item-based CF":
+        if mode == "Similar Movies":
             results = recommend_item_based(selected, item_similarity_df, top_n)
-        elif mode == "User-based CF":
+        elif mode == "Similar Audience":
             results = recommend_user_based(selected, user_item_matrix, top_n)
         else:
             results = recommend_svd(selected, svd_model, movies_df, top_n)
@@ -347,8 +364,8 @@ if go and len(selected) == 3:
         <div class="metric-label">Movies indexed</div>
       </div>
       <div class="metric-box">
-        <div class="metric-value">{mode.split("-")[0].strip()}</div>
-        <div class="metric-label">{METHOD_META[mode]}</div>
+        <div class="metric-value">{short_label}</div>
+        <div class="metric-label">Method used</div>
       </div>
     </div>
     """, unsafe_allow_html=True)
