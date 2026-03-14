@@ -3,10 +3,15 @@ app.py — CineMatch · Movie Recommendation System
 Run with:  streamlit run app.py
 """
 
-import streamlit as st
-import pandas as pd
+import json
+import os
 import pickle
+
+import pandas as pd
+import streamlit as st
 from sklearn.metrics.pairwise import cosine_similarity
+from surprise import Dataset, Reader, SVD
+from surprise.model_selection import train_test_split as surprise_split
 
 # ─────────────────────────────────────────────
 # PAGE CONFIG
@@ -33,7 +38,6 @@ html, body, [class*="css"] {
 
 #MainMenu, footer, header { visibility: hidden; }
 
-/* ── Hero ── */
 .hero { padding: 2.4rem 0 1.2rem; }
 .hero-eyebrow {
     font-size: 0.7rem;
@@ -60,10 +64,8 @@ html, body, [class*="css"] {
     margin-bottom: 0;
 }
 
-/* ── Dividers ── */
 .rule { border: none; border-top: 1px solid #1E1E1E; margin: 1.6rem 0; }
 
-/* ── Section labels ── */
 .label {
     font-size: 0.68rem;
     letter-spacing: 0.18em;
@@ -73,7 +75,6 @@ html, body, [class*="css"] {
     margin-bottom: 0.6rem;
 }
 
-/* ── Selected picks pills ── */
 .picks-row { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 1rem; }
 .pick-pill {
     background: #1A1A1A;
@@ -85,7 +86,6 @@ html, body, [class*="css"] {
     font-weight: 500;
 }
 
-/* ── Recommendation cards ── */
 .rec-list { display: flex; flex-direction: column; gap: 0.5rem; margin-top: 0.8rem; }
 .rec-card {
     background: #141414;
@@ -118,12 +118,7 @@ html, body, [class*="css"] {
     flex-shrink: 0;
 }
 
-/* ── Method radio styling ── */
-div[data-testid="stRadio"] > div {
-    display: flex;
-    gap: 0.5rem;
-    flex-wrap: wrap;
-}
+div[data-testid="stRadio"] > div { display: flex; gap: 0.5rem; flex-wrap: wrap; }
 div[data-testid="stRadio"] label {
     background: #141414 !important;
     border: 1px solid #2A2A2A !important;
@@ -141,7 +136,6 @@ div[data-testid="stRadio"] label:has(input:checked) {
     font-weight: 500 !important;
 }
 
-/* ── Multiselect ── */
 .stMultiSelect [data-baseweb="tag"] {
     background-color: #F5C518 !important;
     color: #0C0C0C !important;
@@ -149,7 +143,6 @@ div[data-testid="stRadio"] label:has(input:checked) {
 }
 .stMultiSelect [data-baseweb="tag"] span { color: #0C0C0C !important; }
 
-/* ── Button ── */
 div.stButton > button {
     background: #F5C518;
     color: #0C0C0C;
@@ -165,7 +158,6 @@ div.stButton > button {
 div.stButton > button:hover { opacity: 0.84; background: #F5C518; border: none; }
 div.stButton > button:disabled { opacity: 0.3; background: #F5C518; }
 
-/* ── Info strip ── */
 .info-strip {
     background: #111;
     border-left: 3px solid #F5C518;
@@ -176,7 +168,6 @@ div.stButton > button:disabled { opacity: 0.3; background: #F5C518; }
     margin: 0.5rem 0 1rem;
 }
 
-/* ── Metrics row ── */
 .metrics-row { display: flex; gap: 1rem; margin: 0.5rem 0 1.2rem; }
 .metric-box {
     flex: 1;
@@ -201,59 +192,85 @@ div.stButton > button:disabled { opacity: 0.3; background: #F5C518; }
 # ─────────────────────────────────────────────
 # LOAD MODELS
 # ─────────────────────────────────────────────
+# SVD is retrained at startup from the raw data file + saved
+# JSON params. This avoids pickle's Cython binary incompatibility
+# when the model is trained on a different Python/OS than Cloud.
+# The other artifacts (pure pandas/numpy) are safe to pickle.
+
+DATA_PATH  = "ml-100k"
+MODELS_DIR = "models"
+
+
 @st.cache_resource(show_spinner="Loading recommendation engine …")
 def load_models():
-    user_item_matrix = pd.read_pickle("models/user_item_matrix.pkl")
-    item_similarity_df = pd.read_pickle("models/item_similarity.pkl")
-    movies_df = pd.read_pickle("models/movies.pkl")
-    with open("models/svd_model.pkl", "rb") as f:
-        svd_model = pickle.load(f)
+    # ── Pandas / numpy artifacts ──────────────────────────────
+    user_item_matrix  = pd.read_pickle(os.path.join(MODELS_DIR, "user_item_matrix.pkl"))
+    item_similarity_df = pd.read_pickle(os.path.join(MODELS_DIR, "item_similarity.pkl"))
+    movies_df         = pd.read_pickle(os.path.join(MODELS_DIR, "movies.pkl"))
+
+    # ── SVD: retrain from data + saved best params ────────────
+    with open(os.path.join(MODELS_DIR, "svd_params.json")) as f:
+        params = json.load(f)
+
+    reader       = Reader(line_format="user item rating timestamp", sep="\t")
+    surprise_data = Dataset.load_from_file(
+        os.path.join(DATA_PATH, "u.data"), reader=reader
+    )
+    trainset, _ = surprise_split(surprise_data, test_size=0.2, random_state=42)
+
+    svd_model = SVD(**params)
+    svd_model.fit(trainset)
+
     return user_item_matrix, item_similarity_df, movies_df, svd_model
+
 
 try:
     user_item_matrix, item_similarity_df, movies_df, svd_model = load_models()
     movie_titles = sorted(movies_df["title"].tolist())
-except FileNotFoundError:
-    st.error("⚠️ Model files not found in `./models/`. Run the notebook save cell first.")
+except FileNotFoundError as e:
+    st.error(
+        f"⚠️ Missing file: `{e.filename}`. "
+        "Make sure `models/` and `ml-100k/` are both committed to your repo."
+    )
     st.stop()
 
 
 # ─────────────────────────────────────────────
-# RECOMMENDATION FUNCTIONS  (your original logic, returns scores too)
+# RECOMMENDATION FUNCTIONS
 # ─────────────────────────────────────────────
-def recommend_from_favorites(favorite_movies, item_similarity_df, top_n=10):
+def recommend_item_based(favorite_movies, item_similarity_df, top_n=10):
     scores = pd.Series(dtype=float)
     for movie in favorite_movies:
         if movie in item_similarity_df.columns:
             scores = scores.add(item_similarity_df[movie], fill_value=0)
     scores = scores.drop(favorite_movies, errors="ignore")
-    top = scores.sort_values(ascending=False).head(top_n)
+    top  = scores.sort_values(ascending=False).head(top_n)
     norm = top / top.max() if top.max() > 0 else top
     return list(zip(top.index.tolist(), norm.values.tolist()))
 
 
 def recommend_user_based(favorite_movies, user_item_matrix, top_n=10):
-    pseudo_user = pd.Series(0.0, index=user_item_matrix.columns)
+    pseudo = pd.Series(0.0, index=user_item_matrix.columns)
     for movie in favorite_movies:
-        if movie in pseudo_user.index:
-            pseudo_user[movie] = 5.0
-    similarities = cosine_similarity([pseudo_user.values], user_item_matrix.values)[0]
-    weighted_ratings = pd.Series(0.0, index=user_item_matrix.columns)
-    for i, sim in enumerate(similarities):
-        weighted_ratings += user_item_matrix.iloc[i] * sim
-    weighted_ratings /= similarities.sum()
-    weighted_ratings = weighted_ratings.drop(favorite_movies, errors="ignore")
-    top = weighted_ratings.sort_values(ascending=False).head(top_n)
+        if movie in pseudo.index:
+            pseudo[movie] = 5.0
+    sims = cosine_similarity([pseudo.values], user_item_matrix.values)[0]
+    weighted = pd.Series(0.0, index=user_item_matrix.columns)
+    for i, sim in enumerate(sims):
+        weighted += user_item_matrix.iloc[i] * sim
+    weighted /= sims.sum()
+    weighted  = weighted.drop(favorite_movies, errors="ignore")
+    top  = weighted.sort_values(ascending=False).head(top_n)
     norm = top / top.max() if top.max() > 0 else top
     return list(zip(top.index.tolist(), norm.values.tolist()))
 
 
 def recommend_svd(favorite_movies, svd_model, movies_df, top_n=10):
-    user_unrated = movies_df[~movies_df["title"].isin(favorite_movies)].copy()
-    user_unrated["pred"] = user_unrated["movie_id"].apply(
+    candidates = movies_df[~movies_df["title"].isin(favorite_movies)].copy()
+    candidates["pred"] = candidates["movie_id"].apply(
         lambda x: svd_model.predict(0, x).est
     )
-    top = user_unrated.sort_values("pred", ascending=False).head(top_n)
+    top = candidates.sort_values("pred", ascending=False).head(top_n)
     lo, hi = top["pred"].min(), top["pred"].max()
     top = top.copy()
     top["norm"] = (top["pred"] - lo) / (hi - lo + 1e-9)
@@ -268,7 +285,7 @@ METHOD_META = {
 
 
 # ─────────────────────────────────────────────
-# UI LAYOUT
+# UI
 # ─────────────────────────────────────────────
 st.markdown("""
 <div class="hero">
@@ -280,9 +297,7 @@ st.markdown("""
 
 st.markdown('<hr class="rule">', unsafe_allow_html=True)
 
-# ── Movie picker ──────────────────────────────
 st.markdown('<div class="label">Your three favourites</div>', unsafe_allow_html=True)
-
 selected = st.multiselect(
     label="picks",
     options=movie_titles,
@@ -298,7 +313,6 @@ if 0 < remaining < 3:
         unsafe_allow_html=True,
     )
 
-# ── Algorithm selector ────────────────────────
 st.markdown('<div class="label" style="margin-top:1.2rem">Algorithm</div>', unsafe_allow_html=True)
 mode = st.radio(
     label="mode",
@@ -307,18 +321,14 @@ mode = st.radio(
     label_visibility="collapsed",
 )
 
-# ── Top-N slider ──────────────────────────────
 top_n = st.slider("Recommendations", min_value=5, max_value=20, value=10, step=1)
-
-# ── CTA button ───────────────────────────────
 st.markdown("")
 go = st.button("✦  Find My Movies", disabled=(len(selected) != 3))
 
-# ── Results ───────────────────────────────────
 if go and len(selected) == 3:
     with st.spinner("Curating your watchlist …"):
         if mode == "Item-based CF":
-            results = recommend_from_favorites(selected, item_similarity_df, top_n)
+            results = recommend_item_based(selected, item_similarity_df, top_n)
         elif mode == "User-based CF":
             results = recommend_user_based(selected, user_item_matrix, top_n)
         else:
@@ -326,7 +336,6 @@ if go and len(selected) == 3:
 
     st.markdown('<hr class="rule">', unsafe_allow_html=True)
 
-    # Stats row
     st.markdown(f"""
     <div class="metrics-row">
       <div class="metric-box">
@@ -344,24 +353,22 @@ if go and len(selected) == 3:
     </div>
     """, unsafe_allow_html=True)
 
-    # Seed pills
     st.markdown('<div class="label">Based on</div>', unsafe_allow_html=True)
     pills = "".join(f'<span class="pick-pill">🎬 {m}</span>' for m in selected)
     st.markdown(f'<div class="picks-row">{pills}</div>', unsafe_allow_html=True)
 
-    # Movie cards
     st.markdown('<div class="label">Your watchlist</div>', unsafe_allow_html=True)
-    cards_html = '<div class="rec-list">'
+    cards = '<div class="rec-list">'
     for rank, (title, score) in enumerate(results, 1):
         pct = f"{score * 100:.0f}% match"
-        cards_html += f"""
+        cards += f"""
         <div class="rec-card">
           <div class="rec-rank">{rank}</div>
           <div class="rec-title">{title}</div>
           <div class="rec-badge">{pct}</div>
         </div>"""
-    cards_html += "</div>"
-    st.markdown(cards_html, unsafe_allow_html=True)
+    cards += "</div>"
+    st.markdown(cards, unsafe_allow_html=True)
 
 elif not go:
     st.markdown(
